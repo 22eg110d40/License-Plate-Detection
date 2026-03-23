@@ -25,5 +25,14 @@ def setup_models():
     else:
         print("✅ EDSR model already exists.")
 
+    # Real-ESRGAN Model (x4 upscaling)
+    esrgan_url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth"
+    esrgan_path = os.path.join(model_dir, "RealESRGAN_x4plus.pth")
+    
+    if not os.path.exists(esrgan_path):
+        download_file(esrgan_url, esrgan_path)
+    else:
+        print("✅ ESRGAN model already exists.")
+
 if __name__ == "__main__":
     setup_models()

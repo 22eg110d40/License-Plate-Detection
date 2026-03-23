@@ -23,6 +23,8 @@ import json
 from datetime import datetime
 import time
 import easyocr
+import torch
+import esrgan_utils
 
 from ultralytics import YOLO
 
@@ -76,7 +78,7 @@ def detect_license_plates_yolo(frame: np.ndarray) -> List[Tuple[int, int, int, i
     return plates
 
 def process_license_plates(frame: np.ndarray, plates: List[Tuple[int, int, int, int]], 
-                       blur_intensity: int = 25) -> Tuple[np.ndarray, List[str]]:
+                       blur_intensity: int = 25, sr_model = None, device: str = 'cpu') -> Tuple[np.ndarray, List[str]]:
     """
     Read text from detected plates, then blur them on the frame.
     
@@ -104,8 +106,15 @@ def process_license_plates(frame: np.ndarray, plates: List[Tuple[int, int, int, 
         # Extract the plate region of interest (ROI) BEFORE blurring
         roi = processed_frame[y:y+h, x:x+w]
         
-        # Convert to grayscale for better OCR
-        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        # --- 1. ESRGAN Enhancement (Optional) ---
+        if sr_model is not None:
+            # Upsample the plate ROI
+            roi = esrgan_utils.upsample_esrgan(sr_model, roi, device=device)
+            # Use the upsampled image for OCR
+            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        else:
+            # Standard preprocessing
+            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         
         # Apply slight thresholding to enhance contrast
         _, thresh_roi = cv2.threshold(gray_roi, 100, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
@@ -130,7 +139,7 @@ def process_license_plates(frame: np.ndarray, plates: List[Tuple[int, int, int, 
     return processed_frame, detected_texts
 
 
-def process_video(input_path: str, output_path: str, blur_intensity: int = 25) -> dict:
+def process_video(input_path: str, output_path: str, blur_intensity: int = 25, apply_sr: bool = False) -> dict:
     """
     Process a single video file.
     
@@ -144,6 +153,17 @@ def process_video(input_path: str, output_path: str, blur_intensity: int = 25) -
     """
     start_time = time.time()
     
+    # Load ESRGAN if requested
+    sr_model = None
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if apply_sr:
+        model_path = os.path.join("models", "RealESRGAN_x4plus.pth")
+        if os.path.exists(model_path):
+            print(f"  ✨ Loading ESRGAN for enhancement on {device}...")
+            sr_model = esrgan_utils.load_esrgan_model(model_path, device=device)
+        else:
+            print(f"  ⚠️ ESRGAN model not found at {model_path}. Skipping enhancement.")
+
     cap = cv2.VideoCapture(input_path)
     
     if not cap.isOpened():
@@ -181,7 +201,7 @@ def process_video(input_path: str, output_path: str, blur_intensity: int = 25) -
         plates_detected += len(plates)
         
         if plates:
-            frame, texts = process_license_plates(frame, plates, blur_intensity)
+            frame, texts = process_license_plates(frame, plates, blur_intensity, sr_model, device)
             for text in texts:
                 if text not in all_detected_texts:
                    all_detected_texts.append(text)
@@ -211,7 +231,7 @@ def process_video(input_path: str, output_path: str, blur_intensity: int = 25) -
 
 
 def batch_process_videos(input_dir: str, output_dir: str, blur_intensity: int = 25,
-                        video_extensions: List[str] = None) -> dict:
+                        video_extensions: List[str] = None, apply_sr: bool = False) -> dict:
     """
     Process all videos in a directory.
     
@@ -257,7 +277,7 @@ def batch_process_videos(input_dir: str, output_dir: str, blur_intensity: int = 
         output_filename = f"processed_{os.path.splitext(video_file.name)[0]}.avi"
         output_path = os.path.join(output_dir, output_filename)
         
-        result = process_video(input_path, output_path, blur_intensity)
+        result = process_video(input_path, output_path, blur_intensity, apply_sr=apply_sr)
         results.append(result)
         
         if result['status'] == 'success':
@@ -318,6 +338,8 @@ def main():
     parser.add_argument('--extensions', '-e', nargs='+',
                        default=['.mp4', '.avi', '.mov', '.mkv'],
                        help='Video file extensions to process')
+    parser.add_argument('--apply_sr', action='store_true',
+                       help='Apply ESRGAN super-resolution to license plates')
     
     args = parser.parse_args()
     
@@ -330,7 +352,8 @@ def main():
         input_dir=args.input_dir,
         output_dir=args.output_dir,
         blur_intensity=args.blur_intensity,
-        video_extensions=args.extensions
+        video_extensions=args.extensions,
+        apply_sr=args.apply_sr
     )
 
 

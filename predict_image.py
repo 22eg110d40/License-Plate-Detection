@@ -4,6 +4,8 @@ import cv2
 
 # Import our detection logic from the main batch script
 import batch_process_videos
+import esrgan_utils
+import torch
 
 def predict_single_image(image_path):
     print(f"\n{'='*50}")
@@ -29,8 +31,35 @@ def predict_single_image(image_path):
     print(f"✅ Found {len(plates)} plate(s).")
     
     if plates:
-        print("📝 Running EasyOCR extraction on detected plates...")
-        processed_frame, texts = batch_process_videos.process_license_plates(frame, plates)
+        print("📝 Running ESRGAN Super-Resolution and OCR extraction...")
+        
+        # Load ESRGAN model
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        model_path = os.path.join("models", "RealESRGAN_x4plus.pth")
+        sr_model = None
+        if os.path.exists(model_path):
+            sr_model = esrgan_utils.load_esrgan_model(model_path, device=device)
+        
+        processed_frame, texts = batch_process_videos.process_license_plates(frame.copy(), plates)
+        
+        # Create output directories
+        out_dir = "processed_images"
+        roi_dir = os.path.join(out_dir, "enhanced_plates")
+        os.makedirs(out_dir, exist_ok=True)
+        os.makedirs(roi_dir, exist_ok=True)
+
+        if sr_model:
+            for i, (x, y, w, h) in enumerate(plates):
+                # Padding
+                px, py, pw, ph = max(0, x-5), max(0, y-5), min(frame.shape[1]-x, w+10), min(frame.shape[0]-y, h+10)
+                roi = frame[py:py+ph, px:px+pw]
+                
+                print(f"✨ Enhancing Plate {i+1} with ESRGAN...")
+                enhanced_roi = esrgan_utils.upsample_esrgan(sr_model, roi, device=device)
+                
+                roi_path = os.path.join(roi_dir, f"plate_{i+1}_{os.path.basename(image_path)}")
+                cv2.imwrite(roi_path, enhanced_roi)
+                print(f"✅ Enhanced plate saved to: {roi_path}")
         
         print(f"\n{'-'*50}")
         print("🎯 FINAL RESULTS:")
@@ -42,8 +71,6 @@ def predict_single_image(image_path):
         print(f"{'-'*50}")
             
         # Save output
-        out_dir = "processed_images"
-        os.makedirs(out_dir, exist_ok=True)
         out_path = os.path.join(out_dir, f"result_{os.path.basename(image_path)}")
         cv2.imwrite(out_path, processed_frame)
         print(f"\n💾 Saved annotated image to: {out_path}")

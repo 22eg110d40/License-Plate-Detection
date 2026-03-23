@@ -3,6 +3,8 @@ import numpy as np
 import os
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from skimage.metrics import structural_similarity as ssim
+import esrgan_utils
+import torch
 
 def evaluate_sr(model_path, image_path):
     out_dir = "processed_output"
@@ -18,11 +20,17 @@ def evaluate_sr(model_path, image_path):
         print(f"Error: Image not found at {image_path}")
         return
 
-    # Load model
+    # Load EDSR model
     print("Loading EDSR model...")
-    sr = cv2.dnn_superres.DnnSuperResImpl_create()
-    sr.readModel(model_path)
-    sr.setModel("edsr", 4)
+    sr_edsr = cv2.dnn_superres.DnnSuperResImpl_create()
+    sr_edsr.readModel(model_path)
+    sr_edsr.setModel("edsr", 4)
+
+    # Load ESRGAN model
+    esrgan_path = os.path.join("models", "RealESRGAN_x4plus.pth")
+    print("Loading ESRGAN model...")
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    sr_esrgan = esrgan_utils.load_esrgan_model(esrgan_path, device=device)
 
     # Load image
     img = cv2.imread(image_path)
@@ -40,29 +48,36 @@ def evaluate_sr(model_path, image_path):
     # 1. Create simulated low-res image (Ground Truth -> LR)
     lr_img = cv2.resize(img, (w // 4, h // 4), interpolation=cv2.INTER_CUBIC)
 
-    # 2. Reconstruct with model (LR -> SR)
-    print("Upscaling with EDSR x4 (This may take a moment)...")
-    sr_img = sr.upsample(lr_img)
+    # 2. Reconstruct with EDSR (LR -> SR_EDSR)
+    print("Upscaling with EDSR x4...")
+    sr_edsr_img = sr_edsr.upsample(lr_img)
 
-    # 3. Baseline: Simple bicubic upscaling (LR -> Bicubic)
+    # 3. Reconstruct with ESRGAN (LR -> SR_ESRGAN)
+    print(f"Upscaling with ESRGAN x4 on {device}...")
+    sr_esrgan_img = esrgan_utils.upsample_esrgan(sr_esrgan, lr_img, device=device)
+
+    # 4. Baseline: Simple bicubic upscaling (LR -> Bicubic)
     bicubic_img = cv2.resize(lr_img, (w, h), interpolation=cv2.INTER_CUBIC)
 
     # --- Metrics ---
     # PSNR
-    psnr_edsr = psnr(img, sr_img)
+    psnr_edsr = psnr(img, sr_edsr_img)
+    psnr_esrgan = psnr(img, sr_esrgan_img)
     psnr_bicubic = psnr(img, bicubic_img)
 
     # SSIM (needs multichannel=True for color)
-    ssim_edsr = ssim(img, sr_img, channel_axis=2)
+    ssim_edsr = ssim(img, sr_edsr_img, channel_axis=2)
+    ssim_esrgan = ssim(img, sr_esrgan_img, channel_axis=2)
     ssim_bicubic = ssim(img, bicubic_img, channel_axis=2)
 
-    print(f"\n{'-'*50}")
+    print(f"\n{'-'*60}")
     print("EVALUATION METRICS:")
     print(f"{'Method':<15} | {'PSNR (dB)':<12} | {'SSIM':<10}")
     print(f"{'-'*15} + {'-'*12} + {'-'*10}")
     print(f"{'Bicubic':<15} | {psnr_bicubic:<12.4f} | {ssim_bicubic:<10.4f}")
     print(f"{'EDSR x4':<15} | {psnr_edsr:<12.4f} | {ssim_edsr:<10.4f}")
-    print(f"{'-'*50}")
+    print(f"{'ESRGAN x4':<15} | {psnr_esrgan:<12.4f} | {ssim_esrgan:<10.4f}")
+    print(f"{'-'*60}")
 
     improvement_psnr = psnr_edsr - psnr_bicubic
     improvement_ssim = (ssim_edsr - ssim_bicubic) / ssim_bicubic * 100
@@ -77,9 +92,10 @@ Method          | PSNR (dB)    | SSIM
 --------------------------------------------------
 Bicubic        | {psnr_bicubic:.4f}      | {ssim_bicubic:.4f}    
 EDSR x4        | {psnr_edsr:.4f}      | {ssim_edsr:.4f}    
+ESRGAN x4      | {psnr_esrgan:.4f}      | {ssim_esrgan:.4f}    
 --------------------------------------------------
-EDSR improves PSNR by {improvement_psnr:.2f} dB
-EDSR improves SSIM by {improvement_ssim:.2f}%
+ESRGAN improves PSNR over Bicubic by {psnr_esrgan - psnr_bicubic:.2f} dB
+ESRGAN vs EDSR PSNR diff: {psnr_esrgan - psnr_edsr:.2f} dB
 ==================================================
 """
     print(results_text)
@@ -92,7 +108,8 @@ EDSR improves SSIM by {improvement_ssim:.2f}%
     os.makedirs(out_dir, exist_ok=True)
     cv2.imwrite(os.path.join(out_dir, "eval_original.png"), img)
     cv2.imwrite(os.path.join(out_dir, "eval_lowres.png"), lr_img)
-    cv2.imwrite(os.path.join(out_dir, "eval_upscaled.png"), sr_img)
+    cv2.imwrite(os.path.join(out_dir, "eval_edsr.png"), sr_edsr_img)
+    cv2.imwrite(os.path.join(out_dir, "eval_esrgan.png"), sr_esrgan_img)
     print(f"\nSaved comparison images to: {out_dir}/")
     print(f"{'='*50}\n")
 
