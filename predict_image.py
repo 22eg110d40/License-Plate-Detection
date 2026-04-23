@@ -40,7 +40,8 @@ def predict_single_image(image_path):
         if os.path.exists(model_path):
             sr_model = esrgan_utils.load_esrgan_model(model_path, device=device)
         
-        processed_frame, texts = batch_process_videos.process_license_plates(frame.copy(), plates)
+        # We pass sr_model and device to process_license_plates for the same robust OCR pipeline
+        processed_frame, texts = batch_process_videos.process_license_plates(frame.copy(), plates, sr_model=sr_model, device=device)
         
         # Create output directories
         out_dir = "processed_images"
@@ -56,6 +57,8 @@ def predict_single_image(image_path):
                 
                 print(f"✨ Enhancing Plate {i+1} with ESRGAN...")
                 enhanced_roi = esrgan_utils.upsample_esrgan(sr_model, roi, device=device)
+                # Apply sharpening to the saved thumbnail as well
+                enhanced_roi = batch_process_videos.sharpen_image(enhanced_roi)
                 
                 roi_path = os.path.join(roi_dir, f"plate_{i+1}_{os.path.basename(image_path)}")
                 cv2.imwrite(roi_path, enhanced_roi)
